@@ -6,7 +6,7 @@ import socket
 import sqlite3
 import unicodedata
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TypedDict, cast
@@ -18,6 +18,12 @@ ROOT = Path(__file__).resolve().parent
 MODEL = "qwen2.5:0.5b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 MAX_BODY_SIZE = 131072
+DEMO_REPLY = (
+    "Esta é uma resposta fixa de demonstração, não uma resposta de IA.\n\n"
+    "A tela recebeu sua pergunta! Na Raspberry, o modelo local "
+    "vai responder aqui. Você já pode testar o envio de mensagens "
+    "e o botão Nova conversa."
+)
 SYSTEM_PROMPT = (
     "Você é o Conta Comigo, um tutor de matemática para crianças. "
     "Responda sempre em português brasileiro, com frases curtas e acolhedoras. "
@@ -283,18 +289,26 @@ def validate_messages(payload: object) -> list[Message]:
     return validated
 
 
-def ollama_request(path: str, payload: object = None) -> object:
+def make_ollama_request(path: str, payload: object = None) -> Request:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = Request(
+    return Request(
         OLLAMA_URL + path,
         data=data,
         headers={"Content-Type": "application/json"},
     )
-    with urlopen(request, timeout=180 if data else 5) as response:
+
+
+def ollama_request(path: str, payload: object = None) -> object:
+    request = make_ollama_request(path, payload)
+    with urlopen(request, timeout=180 if payload is not None else 5) as response:
         return json.load(response)
 
 
-def get_reply(messages: list[Message], references: list[Reference]) -> str:
+def build_chat_payload(
+    messages: list[Message],
+    references: list[Reference],
+    stream: bool = False,
+) -> dict[str, object]:
     instructions = SYSTEM_PROMPT
     if references:
         material = "\n\n".join(
@@ -322,16 +336,21 @@ def get_reply(messages: list[Message], references: list[Reference]) -> str:
             break
         selected_messages = pair + selected_messages
         character_count += pair_length
-    payload = {
+    return {
         "model": MODEL,
         "messages": [
             {"role": "system", "content": instructions},
             *selected_messages,
         ],
-        "stream": False,
+        "stream": stream,
         "options": {"num_ctx": 4096, "num_predict": 350, "temperature": 0.3},
     }
-    result = ollama_request("/api/chat", payload)
+
+
+def get_reply(messages: list[Message], references: list[Reference]) -> str:
+    result = ollama_request(
+        "/api/chat", build_chat_payload(messages, references),
+    )
     if not isinstance(result, dict):
         raise ValueError("O Ollama retornou uma resposta inválida.")
     message = result.get("message")
@@ -341,6 +360,36 @@ def get_reply(messages: list[Message], references: list[Reference]) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("O modelo retornou uma resposta vazia. Tente novamente.")
     return content.strip()
+
+
+def stream_reply(
+    messages: list[Message], references: list[Reference],
+) -> Generator[str, None, None]:
+    request = make_ollama_request(
+        "/api/chat", build_chat_payload(messages, references, stream=True),
+    )
+    has_content = False
+    with urlopen(request, timeout=180) as response:
+        for line in response:
+            if not line.strip():
+                continue
+            result: object = json.loads(line)
+            if not isinstance(result, dict) or result.get("error"):
+                raise ValueError("O Ollama retornou um erro na geração.")
+            message = result.get("message", {})
+            if not isinstance(message, dict):
+                raise ValueError("O Ollama retornou uma mensagem inválida.")
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                raise ValueError("O Ollama retornou um trecho inválido.")
+            if content:
+                has_content = has_content or bool(content.strip())
+                yield content
+            if result.get("done") is True:
+                if not has_content:
+                    raise ValueError("O modelo retornou uma resposta vazia.")
+                return
+    raise ValueError("A geração foi interrompida antes da conclusão.")
 
 
 class TutorServer(ThreadingHTTPServer):
@@ -370,9 +419,19 @@ class TutorHandler(BaseHTTPRequestHandler):
         )
 
     def send_content(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_headers(status, content_type, len(body))
+        self.wfile.write(body)
+
+    def send_headers(
+        self,
+        status: int,
+        content_type: str,
+        content_length: int | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        if content_length is not None:
+            self.send_header("Content-Length", str(content_length))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
@@ -382,7 +441,53 @@ class TutorHandler(BaseHTTPRequestHandler):
             "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
         )
         self.end_headers()
-        self.wfile.write(body)
+
+    def send_stream_event(self, payload: object) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.wfile.write(body + b"\n")
+        self.wfile.flush()
+
+    def stream_chat(
+        self, messages: list[Message], references: list[Reference],
+    ) -> None:
+        demo = cast(TutorServer, self.server).demo
+        try:
+            self.send_headers(
+                200, "application/x-ndjson; charset=utf-8",
+            )
+            self.send_stream_event({
+                "type": "metadata",
+                "demo": demo,
+                "source": "demo" if demo else (
+                    "materials" if references else "model"
+                ),
+                "references": references,
+            })
+            try:
+                if demo:
+                    for part in re.findall(r"\S+\s*", DEMO_REPLY):
+                        self.send_stream_event({"type": "delta", "text": part})
+                else:
+                    with closing(stream_reply(messages, references)) as parts:
+                        for part in parts:
+                            self.send_stream_event({
+                                "type": "delta", "text": part,
+                            })
+            except (URLError, OSError, ValueError) as error:
+                logging.warning("Ollama stream failed: %s", error)
+                self.send_stream_event({
+                    "type": "error",
+                    "error": (
+                        "A geração demorou demais. Tente uma pergunta mais curta."
+                        if isinstance(error, TimeoutError)
+                        else "A resposta foi interrompida ou o modelo falhou. "
+                        "Verifique o Ollama e tente novamente."
+                    ),
+                })
+                return
+            self.send_stream_event({"type": "done"})
+        except (BrokenPipeError, ConnectionResetError):
+            logging.info("Chat client disconnected during streaming")
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
@@ -504,6 +609,12 @@ class TutorHandler(BaseHTTPRequestHandler):
                 })
                 return
             messages = validate_messages(payload)
+            requested_stream = (
+                payload.get("stream", False)
+                if isinstance(payload, dict) else False
+            )
+            if not isinstance(requested_stream, bool):
+                raise ValueError("O campo stream deve ser verdadeiro ou falso.")
             references = store.search_conversation(messages)
         except RequestError as error:
             logging.warning("Invalid request: %s", error)
@@ -522,14 +633,12 @@ class TutorHandler(BaseHTTPRequestHandler):
                 "error": "Não consegui acessar o banco de conteúdos. Nenhuma resposta foi gerada.",
             })
             return
+        if requested_stream:
+            self.stream_chat(messages, references)
+            return
         if cast(TutorServer, self.server).demo:
             self.send_json(200, {
-                "reply": (
-                    "Esta é uma resposta fixa de demonstração, não uma resposta de IA.\n\n"
-                    "A tela recebeu sua pergunta! Na Raspberry, o modelo local "
-                    "vai responder aqui. Você já pode testar o envio de mensagens "
-                    "e o botão Nova conversa."
-                ),
+                "reply": DEMO_REPLY,
                 "demo": True,
                 "source": "demo",
                 "references": references,

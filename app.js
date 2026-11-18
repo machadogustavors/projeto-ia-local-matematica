@@ -277,6 +277,48 @@ async function checkStatus() {
   updateInput();
 }
 
+async function* readChatEvents(response) {
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || "Não foi possível iniciar a resposta.");
+  }
+  if (!response.body || !response.headers.get("Content-Type")?.includes("application/x-ndjson")) {
+    throw new Error("O servidor não respondeu em streaming. Atualize os arquivos do aplicativo.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let buffer = "";
+  let reachedEnd = false;
+  try {
+    while (!reachedEnd) {
+      const { value, done } = await reader.read();
+      reachedEnd = done;
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.trim()) {
+          yield JSON.parse(line);
+        }
+        newline = buffer.indexOf("\n");
+      }
+    }
+    if (buffer.trim()) {
+      yield JSON.parse(buffer);
+    }
+  } finally {
+    if (!reachedEnd) {
+      try {
+        await reader.cancel();
+      } catch (error) {
+        console.warn("Could not close the interrupted chat stream.", error);
+      }
+    }
+    reader.releaseLock();
+  }
+}
+
 async function submitQuestion(event) {
   event.preventDefault();
   const content = question.value.trim();
@@ -298,25 +340,62 @@ async function submitQuestion(event) {
   welcome.hidden = true;
   const userMessage = addMessage("user", content);
   const pendingMessage = addMessage("assistant", "Pensando com calma… Na Raspberry, isso pode levar um tempinho.", true);
+  const replyText = pendingMessage.querySelector("p");
+  let replyContent = "";
   question.value = "";
   updateInput();
 
   try {
-    const data = await requestJson("/api/chat", {
+    const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: [...history, { role: "user", content }].slice(-11) }),
+      body: JSON.stringify({
+        messages: [...history, { role: "user", content }].slice(-11),
+        stream: true,
+      }),
     });
-    if (typeof data.reply !== "string" || !data.reply.trim()) {
-      throw new Error("O modelo retornou uma resposta vazia. Tente novamente.");
+    let metadata = null;
+    let isComplete = false;
+    for await (const event of readChatEvents(response)) {
+      if (!event || typeof event !== "object" || isComplete) {
+        throw new Error("O servidor retornou uma sequência de resposta inválida.");
+      }
+      if (event.type === "error") {
+        throw new Error(typeof event.error === "string" ? event.error : "A geração foi interrompida.");
+      }
+      if (event.type === "metadata" && !metadata && Array.isArray(event.references)
+          && ["demo", "model", "materials"].includes(event.source)) {
+        metadata = event;
+      } else if (event.type === "delta" && metadata && typeof event.text === "string") {
+        const shouldScroll = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
+        replyContent += event.text;
+        pendingMessage.classList.remove("pending");
+        replyText.textContent = replyContent;
+        if (shouldScroll) {
+          scrollConversation();
+        }
+      } else if (event.type === "done" && metadata && replyContent.trim()) {
+        isComplete = true;
+      } else {
+        throw new Error("O servidor retornou uma resposta incompleta ou inválida.");
+      }
     }
-    pendingMessage.remove();
-    const reply = addMessage("assistant", data.reply);
-    addReplyReferences(reply, data);
-    history = [...history, { role: "user", content }, { role: "assistant", content: data.reply }].slice(-10);
+    if (!isComplete) {
+      throw new Error("A conexão terminou antes de concluir a resposta. Tente novamente.");
+    }
+    addReplyReferences(pendingMessage, metadata);
+    history = [...history, { role: "user", content }, { role: "assistant", content: replyContent }].slice(-10);
   } catch (error) {
-    pendingMessage.remove();
-    userMessage.remove();
+    if (replyContent) {
+      pendingMessage.classList.remove("pending");
+      const interruption = document.createElement("div");
+      interruption.className = "reply-reference";
+      interruption.textContent = "Resposta interrompida: este trecho pode estar incompleto e não foi incluído no histórico enviado ao modelo.";
+      pendingMessage.append(interruption);
+    } else {
+      pendingMessage.remove();
+      userMessage.remove();
+    }
     question.value = content;
     showError(error instanceof Error ? error.message : "Falha na conexão. Sua pergunta foi preservada para tentar novamente.");
   } finally {
