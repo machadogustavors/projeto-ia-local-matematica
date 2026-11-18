@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#16645b">
+    <title>Conta Comigo — Tutor de matemática</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="./" aria-label="Conta Comigo, início">
+          <span class="brand-icon" aria-hidden="true">÷</span>
+          <span>conta<span class="brand-second">comigo</span></span>
+        </a>
+        <div class="sidebar-intro">
+          <span class="eyebrow">SEU CANTINHO DE APRENDER</span>
+          <h1>Grandes descobertas começam com uma pergunta.</h1>
+          <p>Matemática no seu ritmo. Uma ideia de cada vez.</p>
+        </div>
+        <button id="new-chat" class="new-chat" type="button">＋ Nova conversa</button>
+        <div class="subject-card">
+          <span class="subject-icon" aria-hidden="true">123</span>
+          <div><strong>Matemática</strong><span>Vamos descobrir juntos</span></div>
+        </div>
+        <div class="sidebar-footer">
+          <span aria-hidden="true">⌂</span>
+          <p>Feito para aprender por aqui.</p>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <div><strong>Seu tutor de matemática</strong><span>Aprender também pode ser uma aventura.</span></div>
+          <div class="view-tabs" role="tablist" aria-label="Seções do tutor">
+            <button id="chat-tab" type="button" role="tab" aria-selected="true" aria-controls="conversation">Conversar</button>
+            <button id="contents-tab" type="button" role="tab" aria-selected="false" aria-controls="contents-panel" tabindex="-1">Conteúdos</button>
+          </div>
+          <span id="connection-status" class="status" role="status">Conectando…</span>
+        </header>
+        <div id="mode-notice" class="mode-notice" hidden></div>
+        <section id="conversation" class="conversation" role="tabpanel" aria-labelledby="chat-tab" tabindex="0">
+          <div id="welcome" class="welcome">
+            <div class="mascot" aria-hidden="true"><span>∑</span><i>✦</i></div>
+            <span class="eyebrow">OI, QUE BOM TER VOCÊ AQUI!</span>
+            <h2>Vamos descobrir<br>a matemática <span>juntos?</span></h2>
+            <p>Pode perguntar, tentar e até errar.<br>É assim que a gente aprende!</p>
+            <div class="suggestions" aria-label="Sugestões de perguntas">
+              <button type="button" data-prompt="Pode me ajudar a entender como somar 12 + 8?"><span aria-hidden="true">＋</span><strong>Somar e subtrair</strong><small>Vamos começar pelo básico</small></button>
+              <button type="button" data-prompt="Pode me ensinar a tabuada do 3, uma pergunta de cada vez?"><span aria-hidden="true">×</span><strong>Praticar a tabuada</strong><small>Um desafio de cada vez</small></button>
+              <button type="button" data-prompt="O que é uma fração? Pode explicar com um exemplo de pizza?"><span aria-hidden="true">½</span><strong>Entender frações</strong><small>Uma pizza pode ajudar!</small></button>
+            </div>
+          </div>
+          <div id="messages" class="messages" role="log" aria-label="Mensagens" aria-live="polite" aria-relevant="additions"></div>
+        </section>
+        <section id="contents-panel" class="contents-panel" role="tabpanel" aria-labelledby="contents-tab" tabindex="0" hidden>
+          <div class="contents-heading">
+            <span class="eyebrow">BASE DO TUTOR</span>
+            <h2>O que vamos ensinar hoje?</h2>
+            <p>Cole explicações, exemplos e atividades. O tutor busca trechos por palavras da pergunta e recebe os materiais relacionados como referência.</p>
+            <p class="contents-note">Tudo fica salvo nesta máquina, sem senha. Isso não treina o modelo nem garante que ele acerte. Não cadastre dados pessoais de alunos.</p>
+          </div>
+          <p id="content-feedback" class="content-feedback" role="status" hidden></p>
+          <div class="contents-grid">
+            <form id="content-form" class="content-editor">
+              <h3 id="content-form-title">Adicionar conteúdo</h3>
+              <label for="content-title">Título</label>
+              <input id="content-title" name="title" maxlength="100" placeholder="Ex.: Frações com exemplos de pizza" required>
+              <label for="content-body">Texto de referência</label>
+              <textarea id="content-body" name="body" maxlength="20000" rows="10" placeholder="Cole aqui o conteúdo que o tutor poderá consultar…" required></textarea>
+              <span id="content-character-count" class="field-hint">0 / 20.000 caracteres</span>
+              <div class="content-form-actions">
+                <button id="save-content" type="submit" class="primary-button">Salvar conteúdo</button>
+                <button id="cancel-content-edit" type="button" class="secondary-button" hidden>Cancelar edição</button>
+              </div>
+            </form>
+            <div class="content-library">
+              <div class="library-heading"><h3>Conteúdos salvos <span id="content-count"></span></h3><button id="refresh-contents" type="button" class="secondary-button">Atualizar</button></div>
+              <p id="contents-empty" class="contents-empty">Nenhum conteúdo cadastrado ainda. Comece pelo formulário ao lado.</p>
+              <div id="content-list" class="content-list"></div>
+            </div>
+          </div>
+        </section>
+        <footer id="chat-composer" class="composer-area">
+          <p id="error-message" class="error-message" role="alert" hidden></p>
+          <form id="chat-form" class="composer">
+            <label class="sr-only" for="question">Sua pergunta de matemática</label>
+            <textarea id="question" name="question" rows="1" maxlength="1500" placeholder="O que vamos aprender hoje?" required></textarea>
+            <button id="send-button" type="submit" aria-label="Enviar pergunta" disabled><span aria-hidden="true">↑</span></button>
+          </form>
+          <div class="composer-hint"><span>Não compartilhe seu nome completo, endereço ou senha.</span><span id="character-count">0 / 1500</span></div>
+          <p class="disclaimer">Eu também posso errar. Confira as respostas com seu professor ou professora.</p>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>
